@@ -1,0 +1,168 @@
+name: "Build (Linux)"
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+# Only allow one build per branch at a time. New builds will cancel existing builds.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Rather than having every job in the matrix try to build its own Clang, we built it once
+  # before running the matrix. Then we can just restore it from the cache in each job.
+  build-clang:
+    name: Build Clang
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - name: Cache Clang/LLVM
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684
+        with:
+          path: |
+            ${{ github.workspace }}/compiler+runtime/build/llvm-install
+          key: ${{ runner.os }}-${{ hashFiles('${{ github.workspace }}/compiler+runtime/bin/build-clang') }}
+      - name: Build Clang/LLVM
+        run: |
+          if [[ ! -e ${{ github.workspace }}/compiler+runtime/build/llvm-install/usr/local/bin/clang++ ]];
+          then
+            pushd ${{ github.workspace }}/compiler+runtime
+              ./bin/build-clang
+            popd
+          fi
+          ${{ github.workspace }}/compiler+runtime/build/llvm-install/usr/local/bin/clang++ --version
+
+  build-jank:
+    needs:
+      - build-clang
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Ubuntu
+          ## Lint all sources
+          - name: Ubuntu - lint
+            os: ubuntu-24.04
+            lint: true
+          ## Debug + clang-tidy + coverage
+          - name: Ubuntu - debug, analysis, coverage
+            os: ubuntu-24.04
+            build_type: Debug
+            sanitize: none
+            coverage: on
+            analyze: on
+
+          ## Debug + sanitization
+          # TODO: Fix this. relocation target 0x7f35f070a000 (DW.ref.__gxx_personality_v0) is out of range of Delta32 fixup at address 0x7f35f070a000 (<anonymous block> @ 0x7b35f02041a4 + 0x13)
+          # https://github.com/jank-lang/jank/actions/runs/16711172704/job/47296376050
+          #- name: Ubuntu - address sanitizer
+          #  os: ubuntu-24.04
+          #  build_type: Debug
+          #  sanitize: address
+
+          - name: Ubuntu - undefined behavior sanitizer
+            os: ubuntu-24.04
+            build_type: Debug
+            sanitize: undefined
+
+          ## TODO: Fix this. Causes linker issues.
+          # https://github.com/jank-lang/jank/actions/runs/16657688537/job/47146758720
+          #- name: Ubuntu - thread sanitizer
+          #  os: ubuntu-24.04
+          #  build_type: Debug
+          #  sanitize: thread
+
+          ## Release
+          - name: Ubuntu - release
+            os: ubuntu-24.04
+            build_type: Release
+            sanitize: none
+            package: on
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.name }}
+    env:
+      JANK_MATRIX_ID: ${{ matrix.os }}-${{ matrix.build_type }}-${{ matrix.sanitize }}
+      JANK_BUILD_TYPE: ${{ matrix.build_type }}
+      JANK_LINT: ${{ matrix.lint }}
+      JANK_COVERAGE: ${{ matrix.coverage }}
+      JANK_ANALYZE: ${{ matrix.analyze }}
+      JANK_SANITIZE: ${{ matrix.sanitize }}
+      JANK_PACKAGE: ${{ matrix.package }}
+      ASAN_OPTIONS: detect_leaks=0
+      TERM: xterm
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: awalsh128/cache-apt-pkgs-action@5902b33ae29014e6ca012c5d8025d4346556bd40
+        with:
+          packages: default-jdk software-properties-common lsb-release npm lcov leiningen ccache curl git git-lfs zip zipcmp zipmerge ziptool build-essential entr libssl-dev libdouble-conversion-dev pkg-config ninja-build cmake zlib1g-dev libffi-dev libzip-dev libbz2-dev doctest-dev gcc g++ libgc-dev
+          # Increment this when the package list changes.
+          version: 8
+      - name: Cache Clang/LLVM
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684
+        with:
+          path: |
+            ${{ github.workspace }}/compiler+runtime/build/llvm-install
+          key: ${{ runner.os }}-${{ hashFiles('${{ github.workspace }}/compiler+runtime/bin/build-clang') }}
+      - name: Cache object files
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684
+        with:
+          path: |
+            ${{ github.workspace }}/compiler+runtime/.ccache
+            ${{ github.workspace }}/compiler+runtime/.ctcache
+          key: ${{ env.JANK_MATRIX_ID }}
+      - name: Build and test jank
+        id: jank-build-step
+        run: |
+          curl -sL -o install-bb https://raw.githubusercontent.com/babashka/babashka/master/install
+          chmod +x install-bb
+          sudo ./install-bb
+          JANK_INSTALL_DEPS=true ./bin/jank/check_everything.clj
+      - name: Upload .deb for publishing
+        if: github.ref == 'refs/heads/main' && steps.jank-build-step.outputs.deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: jank-deb
+          path: ${{ steps.jank-build-step.outputs.deb }}
+
+  publish-deb:
+    if: github.ref == 'refs/heads/main'
+    needs: build-jank
+    name: Publish .deb
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: jank-deb
+          path: ~/
+      - name: Import GPG key
+        run: |
+          gpg_tmp="$(mktemp).gpg"
+          echo "${{ secrets.GPG_SIGNING_KEY }}" > "${gpg_tmp}"
+          gpg --import "${gpg_tmp}"
+          rm -f "${gpg_tmp}"
+          unset gpg_tmp
+      - name: Commit to PPA repo
+        run: |
+          pushd ~/
+            git clone https://jeaye:${{ secrets.JANK_GITHUB_TOKEN }}@github.com/jank-lang/ppa.git
+            pushd ppa
+              cp -fv ~/*.deb .
+              git add *.deb
+              git config --global user.email "jeaye@jank-lang.org"
+              git config --global user.name "Jeaye Wilkerson"
+              git config --global commit.gpgsign true
+              git commit -m "[automated] Publish new deb"
+              git push origin main
+            popd
+          popd
