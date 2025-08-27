@@ -131,7 +131,7 @@ jobs:
       - name: Install tools and libraries via Homebrew
         run: |
           brew install ccache curl git git-lfs zip entr openssl double-conversion pkg-config ninja python cmake gnupg zlib doctest libzip lbzip2
-      - name: Restore cached Clang/LLVM
+      - name: Cache Clang/LLVM
         uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684
         with:
           path: |
