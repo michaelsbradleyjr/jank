@@ -47,6 +47,11 @@ jobs:
           path: |
             ${{ github.workspace }}/compiler+runtime/build/llvm-install
           key: ${{ runner.os }}-${{ steps.clang-cache-key.outputs.arch }}-jank-lang/llvm-project@jank-${{ steps.clang-cache-key.outputs.sha }}
+      - name: Checkout jank sources
+        if: steps.clang-cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          submodules: false
       - name: Build Clang/LLVM
         if: steps.clang-cache.outputs.cache-hit != 'true'
         run: |
