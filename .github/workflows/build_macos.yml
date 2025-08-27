@@ -147,6 +147,20 @@ jobs:
       - name: Build and test jank
         id: jank-build-step
         run: |
+          export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+          export CPPFLAGS="-I${PWD}/build/llvm-install/usr/local/include $CPPFLAGS"
+          export LDFLAGS="-L${PWD}/build/llvm-install/usr/local/lib $LDFLAGS"
+          export CC="$PWD/build/llvm-install/usr/local/bin/clang"
+          export CXX="$PWD/build/llvm-install/usr/local/bin/clang++"
+          export PATH="$PWD/build/llvm-install/usr/local/bin:$PATH"
+
+          echo SDKROOT="$SDKROOT"
+          echo CPPFLAGS="$CPPFLAGS"
+          echo LDFLAGS="$LDFLAGS"
+          echo CC="$CC"
+          echo CXX="$CXX"
+          echo PATH="$PATH"
+
           curl -sL -o install-bb https://raw.githubusercontent.com/babashka/babashka/master/install
           chmod +x install-bb
           sudo ./install-bb
