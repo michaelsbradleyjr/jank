@@ -22,7 +22,7 @@ jobs:
       run:
         shell: bash --noprofile --norc -eo pipefail {0}
     name: Build Clang
-    runs-on: macos-latest
+    runs-on: macos-15
     timeout-minutes: 150
     outputs:
       arch: ${{ steps.clang-cache-key.outputs.arch }}
@@ -72,12 +72,12 @@ jobs:
         include:
           ## Lint all sources
           - name: macOS - lint
-            os: macos-latest
+            os: macos-15
             lint: true
 
           ## Debug + clang-tidy + coverage
           - name: macOS - debug, analysis, coverage
-            os: macos-latest
+            os: macos-15
             build_type: Debug
             sanitize: none
             coverage: on
@@ -87,25 +87,25 @@ jobs:
           # TODO: Fix this. relocation target 0x7f35f070a000 (DW.ref.__gxx_personality_v0) is out of range of Delta32 fixup at address 0x7f35f070a000 (<anonymous block> @ 0x7b35f02041a4 + 0x13)
           # https://github.com/jank-lang/jank/actions/runs/16711172704/job/47296376050
           #- name: macOS - address sanitizer
-          #  os: macos-latest
+          #  os: macos-15
           #  build_type: Debug
           #  sanitize: address
 
           - name: macOS - undefined behavior sanitizer
-            os: macos-latest
+            os: macos-15
             build_type: Debug
             sanitize: undefined
 
           ## TODO: Fix this. Causes linker issues.
           # https://github.com/jank-lang/jank/actions/runs/16657688537/job/47146758720
           #- name: macOS - thread sanitizer
-          #  os: macos-latest
+          #  os: macos-15
           #  build_type: Debug
           #  sanitize: thread
 
           ## Release
           - name: macOS - release
-            os: macos-latest
+            os: macos-15
             build_type: Release
             sanitize: none
             package: on
