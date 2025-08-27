@@ -127,7 +127,7 @@ jobs:
       - name: Checkout jank sources
         uses: actions/checkout@v4
         with:
-          submodules: true
+          submodules: recursive
       - name: Install tools and libraries via Homebrew
         run: |
           brew install curl git git-lfs zip entr openssl double-conversion pkg-config ninja python cmake gnupg zlib doctest libzip lbzip2
