@@ -1,0 +1,182 @@
+name: "Build (macOS)"
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+# Only allow one build per branch at a time. New builds will cancel existing builds.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Rather than having every job in the matrix try to build its own Clang, we build it once
+  # before running the matrix. Then we can just restore it from the cache in each job.
+  build-clang:
+    defaults:
+      run:
+        shell: bash --noprofile --norc -eo pipefail {0}
+    name: Build Clang
+    runs-on: macos-15
+    timeout-minutes: 150
+    outputs:
+      arch: ${{ steps.clang-cache-key.outputs.arch }}
+      sha: ${{ steps.clang-cache-key.outputs.sha }}
+    steps:
+      - name: Get latest commit on jank-lang/llvm-project@jank
+        id: clang-cache-key
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
+        with:
+          script: |
+            core.setOutput('arch', process.arch);
+            const { data } = await github.rest.repos.getBranch({
+              owner: 'jank-lang',
+              repo: 'llvm-project',
+              branch: 'jank'
+            });
+            core.setOutput('sha', data.commit.sha);
+      - name: Cache Clang/LLVM
+        id: clang-cache
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684
+        with:
+          path: |
+            ${{ github.workspace }}/compiler+runtime/build/llvm-install
+          key: ${{ runner.os }}-${{ steps.clang-cache-key.outputs.arch }}-jank-lang/llvm-project@jank-${{ steps.clang-cache-key.outputs.sha }}
+      - name: Checkout jank sources
+        if: steps.clang-cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+      - name: Build Clang/LLVM
+        if: steps.clang-cache.outputs.cache-hit != 'true'
+        run: |
+          pushd ${{ github.workspace }}/compiler+runtime
+            ./bin/build-clang
+          popd
+          ${{ github.workspace }}/compiler+runtime/build/llvm-install/usr/local/bin/clang++ --version
+      - name: Recheck latest commit on jank-lang/llvm-project@jank
+        if: steps.clang-cache.outputs.cache-hit != 'true'
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
+        with:
+          script: |
+            const expected_sha = '${{ steps.clang-cache-key.outputs.sha }}';
+            const { data } = await github.rest.repos.getBranch({
+              owner: 'jank-lang',
+              repo: 'llvm-project',
+              branch: 'jank'
+            });
+            if (data.commit.sha !== expected_sha) {
+              throw new Error(`Mismatch: sha=${data.commit.sha}, expected_sha=${expected_sha}`);
+            }
+  build-jank:
+    needs:
+      - build-clang
+    defaults:
+      run:
+        shell: bash --noprofile --norc -eo pipefail {0}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          ## Lint all sources
+          - name: macOS - lint
+            os: macos-15
+            lint: true
+
+          ## Debug + clang-tidy + coverage
+          - name: macOS - debug, analysis, coverage
+            os: macos-15
+            build_type: Debug
+            sanitize: none
+            coverage: on
+            analyze: on
+
+          ## Debug + sanitization
+          # TODO: Fix this. relocation target 0x7f35f070a000 (DW.ref.__gxx_personality_v0) is out of range of Delta32 fixup at address 0x7f35f070a000 (<anonymous block> @ 0x7b35f02041a4 + 0x13)
+          # https://github.com/jank-lang/jank/actions/runs/16711172704/job/47296376050
+          #- name: macOS - address sanitizer
+          #  os: macos-15
+          #  build_type: Debug
+          #  sanitize: address
+
+          - name: macOS - undefined behavior sanitizer
+            os: macos-15
+            build_type: Debug
+            sanitize: undefined
+
+          ## TODO: Fix this. Causes linker issues.
+          # https://github.com/jank-lang/jank/actions/runs/16657688537/job/47146758720
+          #- name: macOS - thread sanitizer
+          #  os: macos-15
+          #  build_type: Debug
+          #  sanitize: thread
+
+          ## Release
+          - name: macOS - release
+            os: macos-15
+            build_type: Release
+            sanitize: none
+            package: on
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.name }}
+    env:
+      JANK_MATRIX_ID: ${{ matrix.os }}-${{ matrix.build_type }}-${{ matrix.sanitize }}
+      JANK_BUILD_TYPE: ${{ matrix.build_type }}
+      JANK_LINT: ${{ matrix.lint }}
+      # JANK_COVERAGE: ${{ matrix.coverage }}
+      JANK_ANALYZE: ${{ matrix.analyze }}
+      JANK_SANITIZE: ${{ matrix.sanitize }}
+      JANK_PACKAGE: ${{ matrix.package }}
+      ASAN_OPTIONS: detect_leaks=0
+      TERM: xterm
+      # CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+    timeout-minutes: 45
+    steps:
+      - name: Checkout jank sources
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install tools and libraries via Homebrew
+        run: |
+          # un/reinstall cmake: "Error: cmake was installed from the local/pinned tap"
+          brew uninstall cmake
+          brew install ccache curl git git-lfs zip entr openssl double-conversion pkg-config ninja python cmake gnupg zlib doctest libzip lbzip2
+      - name: Cache Clang/LLVM
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684
+        with:
+          path: |
+            ${{ github.workspace }}/compiler+runtime/build/llvm-install
+          key: ${{ runner.os }}-${{ needs.build-clang.outputs.arch }}-jank-lang/llvm-project@jank-${{ needs.build-clang.outputs.sha }}
+      - name: Cache object files
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684
+        with:
+          path: |
+            ${{ github.workspace }}/compiler+runtime/.ccache
+            ${{ github.workspace }}/compiler+runtime/.ctcache
+          key: ${{ env.JANK_MATRIX_ID }}
+      - name: Build and test jank
+        id: jank-build-step
+        run: |
+          export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+          export CPPFLAGS="-I${PWD}/build/llvm-install/usr/local/include $CPPFLAGS"
+          export LDFLAGS="-L${PWD}/build/llvm-install/usr/local/lib $LDFLAGS"
+          export CC="$PWD/build/llvm-install/usr/local/bin/clang"
+          export CXX="$PWD/build/llvm-install/usr/local/bin/clang++"
+          export PATH="$PWD/build/llvm-install/usr/local/bin:$PATH"
+
+          echo SDKROOT="$SDKROOT"
+          echo CPPFLAGS="$CPPFLAGS"
+          echo LDFLAGS="$LDFLAGS"
+          echo CC="$CC"
+          echo CXX="$CXX"
+          echo PATH="$PATH"
+
+          curl -sL -o install-bb https://raw.githubusercontent.com/babashka/babashka/master/install
+          chmod +x install-bb
+          sudo ./install-bb
+          JANK_INSTALL_DEPS=true ./bin/jank/check_everything.clj
