@@ -59,7 +59,20 @@ jobs:
             ./bin/build-clang
           popd
           ${{ github.workspace }}/compiler+runtime/build/llvm-install/usr/local/bin/clang++ --version
-
+      - name: Recheck latest commit on jank-lang/llvm-project@jank
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
+        with:
+          script: |
+            const expected_sha = '${{ steps.clang-cache-key.outputs.sha }}';
+            const { data } = await github.rest.repos.getBranch({
+              owner: 'jank-lang',
+              repo: 'llvm-project',
+              branch: 'jank'
+            });
+            // actually want !== here, === is just for testing the idea
+            if (data.commit.sha === expected_sha) {
+              throw new Error(`Mismatch: sha=${data.commit.sha}, expected_sha=${expected_sha}`);
+            }
   build-jank:
     needs:
       - build-clang
